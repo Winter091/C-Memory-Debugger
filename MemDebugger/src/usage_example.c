@@ -1,29 +1,20 @@
 #include "stdio.h"
 #include "stdlib.h"
+#include "time.h"
 
-// just include this header in every source file
-// you want to track
+
 #include "mem_debugger.h"
 
 int main()
 {
-    int* a = malloc(6);
+    time_t start = clock();
 
-    // print allocations info at every moment you want!
+    for (int i = 0; i < 1000000; i++)
+    {
+        int* a = malloc(10000);
+        free(a);
+    }
 
-    // this will print info containing one allocation
-    print_allocations_file("Allocations.txt");
-
-    int* b = calloc(2, 1);
-    int* c = malloc(22);
-
-    // this will print info containing three allocations
-    print_allocations_console();
-
-    free(a);
-    free(b);
-    free(c);
-
-    // this will print info containing zero allocations
-    print_allocations_console();
+    time_t end = clock();
+    printf("%d\n", end - start);
 }
