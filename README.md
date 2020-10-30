@@ -1,8 +1,9 @@
 # Memory debugger written in C for C
 
-Use it to track memory leaks, wrong arguments to memory functions and writing past-block errors.
+Use it to track memory leaks, wrong arguments to memory functions, writing to past-block memory 
+and get info about heaviest allocations.
 
-It's super lightweight (just 2 short files), but not super fast.
+It's super lightweight (just 2 short files), but definitely not fast and memory-efficient.
 
 ## Features
 
@@ -35,6 +36,9 @@ a[3] = 0;
 The debugger, when allocating, writes additional bytes at the end of the memory block, 
 
 and during `free()` function checks whether the data after block has changed or not.
+
+If the data is corrupted, the warning will be printed and and abort() will be called
+immediately.
 
 Note: it's impossible to check if writing past-bound has occurred if the pointer to
 
