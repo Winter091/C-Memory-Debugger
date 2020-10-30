@@ -1,238 +1,541 @@
-#include "stdio.h"
+// to use unsafe c functions
+#define _CRT_SECURE_NO_WARNINGS
 
+#include "stdio.h"
+#include "string.h"
+
+// define in order to not affent actual alloc functions inside
+// debug_alloc wrappers
 #define MEM_DEBUG_DISABLE
 #include "mem_debugger.h"
 
-// ================ Struct definitions ===================
+// parameters of bytes written afrer any allocated memory block
+#define BOUND_CHECK_BYTES_COUNT 4
+#define BOUND_CHECK_BYTE_VALUE 218
+
+// ======== Linked list for blocks implementation =========
+
 typedef struct
 {
     void* block;
     size_t size;
     const char* file_name;
-    const char* func_name;
-    uint32_t src_line;
+    int src_line;
 }
-MemAllocData;
+BlockData;
 
-typedef struct MemAllocsNode
+typedef struct LListBlocksNode
 {
-    MemAllocData* data;
-    struct MemAllocsNode* ptr_next;
+    BlockData* data;
+    struct LListBlocksNode* ptr_next;
 }
-MemAllocsNode;
+LListBlocksNode;
 
 typedef struct
 {
-    MemAllocsNode *head, *tail;
+    LListBlocksNode *head, *tail;
+    size_t size;
 }
-MemAllocsList;
+LListBlocks;
 
-// ================ Struct definitions end ================
-
-// ============ Linked list implementation ================
-
-MemAllocsList* list_create()
+LListBlocks* llistblocks_create()
 {
-    MemAllocsList* list = malloc(sizeof(MemAllocsList));
-    list->head = NULL;
-    list->tail = NULL;
-    return list;
+    LListBlocks* llist = malloc(sizeof(LListBlocks));
+    llist->head = NULL;
+    llist->tail = NULL;
+    llist->size = 0;
+    return llist;
 }
 
-void list_push_back(MemAllocsList* list, MemAllocData* elem)
+void llistblocks_push_front(LListBlocks* llist, BlockData* elem)
 {
-    MemAllocsNode* node = malloc(sizeof(MemAllocsNode));
+    LListBlocksNode* node = malloc(sizeof(LListBlocksNode));
     node->data = elem;
     node->ptr_next = NULL;
 
-    // size = 0
-    if (!list->head)
+    if (!llist->size)
     {
-        list->head = node;
-        list->tail = node;
+        llist->head = node;
+        llist->tail = node;
     }
 
     else
     {
-        MemAllocsNode* prev_tail = list->tail;
-        list->tail = node;
-        prev_tail->ptr_next = node;
+        LListBlocksNode* prev_head = llist->head;
+        llist->head = node;
+        llist->head->ptr_next = prev_head;
     }
+
+    llist->size++;
 }
 
-void list_remove(MemAllocsList* list, MemAllocData* elem)
+int llistblocks_remove(LListBlocks* llist, void* block)
 {
-    // size == 0
-    if (!list->head) return;
+    if (!llist->size) return 0;
 
-    // size == 1
-    if (list->head == list->tail)
+    if (llist->size == 1)
     {
-        if (list->head->data->block == elem->block)
-        {
-            free(list->head->data);
-            free(list->head);
-            list->head = NULL;
-            list->tail = NULL;
-        }
+        if (llist->head->data->block != block)
+            return 0;
+
+        free(llist->head->data);
+        free(llist->head);
+        llist->head = NULL;
+        llist->tail = NULL;
+        llist->size = 0;
+        return 1;
     }
 
     // size > 1
+
+    // if data is in head
+    if (llist->head->data->block == block)
+    {
+        LListBlocksNode* prev_head = llist->head;
+        llist->head = llist->head->ptr_next;
+        llist->size--;
+        free(prev_head->data);
+        free(prev_head);
+        return 1;
+    }
+
+    // elem should be in curr_node->ptr_next
+    LListBlocksNode* curr_node = llist->head;
+    while (curr_node->ptr_next && curr_node->ptr_next->data->block != block)
+        curr_node = curr_node->ptr_next;
+
+    // no such element is list?
+    if (!curr_node->ptr_next) return 0;
+
+    // if data is in tail
+    if (curr_node->ptr_next == llist->tail)
+    {
+        LListBlocksNode* prev_tail = llist->tail;
+        llist->tail = curr_node;
+        llist->tail->ptr_next = NULL;
+        free(prev_tail->data);
+        free(prev_tail);
+    }
+
+    // data is not in tail
     else
     {
-        MemAllocsNode* curr_node = list->head;
-        while (curr_node && curr_node->data->block != elem->block)
+        LListBlocksNode* node_to_del = curr_node->ptr_next;
+        curr_node->ptr_next = curr_node->ptr_next->ptr_next;
+        free(node_to_del->data);
+        free(node_to_del);
+    }
+
+    llist->size--;
+    return 1;
+}
+
+BlockData* llistblocks_get(LListBlocks* llist, void* block)
+{
+    if (llist->size == 0) return NULL;
+
+    if (llist->head->data->block == block)
+        return llist->head->data;
+
+    if (llist->tail->data->block == block)
+        return llist->tail->data;
+
+    LListBlocksNode* curr_node = llist->head;
+    while (curr_node && curr_node->data->block != block)
+        curr_node = curr_node->ptr_next;
+
+    return curr_node ? curr_node->data : NULL;
+}
+
+void llistblocks_delete(LListBlocks* llist)
+{
+    LListBlocksNode* curr_node = llist->head;
+
+    while (curr_node)
+    {
+        LListBlocksNode* next_node = curr_node->ptr_next;
+        free(curr_node);
+        curr_node = next_node;
+    }
+
+    free(llist);
+}
+
+// ====== Linked list for blocks implementation end =======
+
+// == Linked list for heavy allocs implementation =========
+
+typedef struct
+{
+    size_t bytes;
+    const char* file_name;
+    int src_line;
+}
+AllocData;
+
+typedef struct LListAllocsNode
+{
+    AllocData* data;
+    struct LListAllocsNode* ptr_next;
+}
+LListAllocsNode;
+
+typedef struct
+{
+    LListAllocsNode *head, *tail;
+    size_t size;
+    size_t bytes_alloc_at_all;
+}
+LListAllocs;
+
+LListAllocs* llistallocs_create()
+{
+    LListAllocs* llist = malloc(sizeof(LListAllocs));
+    llist->head = NULL;
+    llist->tail = NULL;
+    llist->size = 0;
+    llist->bytes_alloc_at_all = 0;
+    return llist;
+}
+
+void llistallocs_push_front(LListAllocs* llist, AllocData* elem)
+{
+    LListAllocsNode* node = malloc(sizeof(LListAllocsNode));
+    node->data = elem;
+    node->ptr_next = NULL;
+
+    if (!llist->size)
+    {
+        llist->head = node;
+        llist->tail = node;
+    }
+
+    else
+    {
+        LListAllocsNode* prev_head = llist->head;
+        llist->head = node;
+        llist->head->ptr_next = prev_head;
+    }
+
+    llist->size++;
+}
+
+AllocData* llistallocs_get(LListAllocs* llist, BlockData* elem)
+{
+    if (llist->size == 0) return NULL;
+
+    if (llist->head->data->src_line == elem->src_line
+        && !strcmp(llist->head->data->file_name, elem->file_name))
+        return llist->head->data;
+
+    if (llist->tail->data->src_line == elem->src_line
+        && !strcmp(llist->tail->data->file_name, elem->file_name))
+        return llist->tail->data;
+
+    LListAllocsNode* curr_node = llist->head;
+    while (curr_node && (curr_node->data->src_line != elem->src_line || strcmp(llist->tail->data->file_name, elem->file_name)))
+        curr_node = curr_node->ptr_next;
+
+    return curr_node ? curr_node->data : NULL;
+}
+
+void llistallocs_update(LListAllocs* llist, BlockData* elem)
+{
+    llist->bytes_alloc_at_all += elem->size;
+
+    if (llist->head->data->src_line == elem->src_line
+        && !strcmp(llist->head->data->file_name, elem->file_name))
+        llist->head->data->bytes += elem->size;
+
+    else if (llist->tail->data->src_line == elem->src_line
+        && !strcmp(llist->tail->data->file_name, elem->file_name))
+        llist->tail->data->bytes += elem->size;
+
+    else
+    {
+        LListAllocsNode* curr_node = llist->head;
+
+        while (curr_node->data->src_line != elem->src_line || strcmp(llist->tail->data->file_name, elem->file_name))
             curr_node = curr_node->ptr_next;
 
-        if (!curr_node)
-            return;
-
-        if (curr_node == list->head)
-        {
-            MemAllocsNode* prev_head = list->head;
-            list->head = list->head->ptr_next;
-            free(prev_head->data);
-            free(prev_head);
-        }
-
-        else if (curr_node == list->tail)
-        {
-            MemAllocsNode* prev_tail = list->tail;
-
-            MemAllocsNode* pre_tail = list->head;
-            while (pre_tail->ptr_next != prev_tail)
-                pre_tail = pre_tail->ptr_next;
-
-            pre_tail->ptr_next = NULL;
-            list->tail = pre_tail;
-            free(prev_tail->data);
-            free(prev_tail);
-        }
-
-        else
-        {
-            MemAllocsNode* pre_elem = list->head;
-            while (pre_elem->ptr_next != curr_node)
-                pre_elem = pre_elem->ptr_next;
-
-            pre_elem->ptr_next = pre_elem->ptr_next->ptr_next;
-            free(curr_node->data);
-            free(curr_node);
-        }
+        curr_node->data->bytes += elem->size;
     }
 }
 
-// ============ Linked list implementation end=============
-
-MemAllocsList* get_alloc_list()
+int compar_func(const void* p1, const void* p2)
 {
-    static MemAllocsList* list = NULL;
-    if (!list) list = list_create();
+    AllocData* d1 = *(AllocData**)p1;
+    AllocData* d2 = *(AllocData**)p2;
+
+    if (d1->bytes > d2->bytes) return -1;
+    else if (d1->bytes == d2->bytes) return 0;
+    else return 1;
+}
+
+AllocData** llistallocs_get_sorted_array(LListAllocs* llist)
+{
+    AllocData** arr = malloc(llist->size * sizeof(AllocData*));
+
+    LListAllocsNode* curr_node = llist->head;
+    for (int i = 0; i < llist->size; i++)
+    {
+        arr[i] = curr_node->data;
+        curr_node = curr_node->ptr_next;
+    }
+
+    qsort(arr, llist->size, sizeof(AllocData*), compar_func);
+
+    return arr;
+}
+
+void llistallocs_delete(LListAllocs* llist)
+{
+    LListAllocsNode* curr_node = llist->head;
+
+    while (curr_node)
+    {
+        LListAllocsNode* next_node = curr_node->ptr_next;
+        free(curr_node);
+        curr_node = next_node;
+    }
+
+    free(llist);
+}
+
+// == Linked list for heavy allocs implementation end =====
+
+// ================== Helper functions ====================
+
+// singleton lists are controlled by these 2 functions
+LListBlocks* get_llistblocks()
+{
+    static LListBlocks* list = NULL;
+    if (!list) list = llistblocks_create();
     return list;
 }
 
-void* debug_malloc(size_t size, const char* file_name, const char* func_name, int src_line)
+LListAllocs* get_llistallocs()
 {
-    void* block = malloc(size);
+    static LListAllocs* list = NULL;
+    if (!list) list = llistallocs_create();
+    return list;
+}
 
-    MemAllocData* data = malloc(sizeof(MemAllocData));
-    data->block = block;
-    data->size = size;
-    data->file_name = file_name;
-    data->func_name = func_name;
-    data->src_line = src_line;
+void crash_null_error(const char* from_func, const char* file_name, int src_line)
+{
+    fprintf(stderr, "Warning!\n");
+    fprintf(stderr, "%s at %s:%d returned NULL!\n", from_func, file_name, src_line);
+    abort();
+}
 
-    MemAllocsList* list = get_alloc_list();
-    list_push_back(list, data);
+void crash_wrong_ptr(const char* from_func, const char* file_name, int src_line)
+{
+    fprintf(stderr, "Warning!\n");
+    fprintf(stderr, "%s at %s:%d is used with wrong pointer!\n", from_func, file_name, src_line);
+    abort();
+}
+
+void crash_bounds_violation(const char* file_name, int src_line, size_t block_size)
+{
+    fprintf(stderr, "Warning!\n");
+    fprintf(stderr, "Out-of-bounds writing occured after memory block, allocated at:\n");
+    fprintf(stderr, "%s:%d (%d bytes)\n", file_name, src_line, block_size);
+    abort();
+}
+
+BlockData* blockdata_create(void* block, size_t size, const char* file_name, int src_line)
+{
+    BlockData* block_data = malloc(sizeof(BlockData));
+    block_data->block = block;
+    block_data->size = size;
+    block_data->file_name = file_name;
+    block_data->src_line = src_line;
+    return block_data;
+}
+
+void update_alloc_data(BlockData* block_data)
+{
+    AllocData* alloc_data = llistallocs_get(get_llistallocs(), block_data);
+
+    if (!alloc_data)
+    {
+        alloc_data = malloc(sizeof(AllocData));
+        alloc_data->bytes = 0;
+        alloc_data->src_line = block_data->src_line;
+        alloc_data->file_name = block_data->file_name;
+        llistallocs_push_front(get_llistallocs(), alloc_data);
+    }
+
+    llistallocs_update(get_llistallocs(), block_data);
+}
+
+// ================ Helper functions end ==================
+
+// ======= Debug versions of allocation functions =========
+
+void* debug_malloc(size_t size, const char* file_name, int src_line)
+{
+    // additional space for bound-checking bytes
+    void* block = malloc(size + BOUND_CHECK_BYTES_COUNT);
+
+    if (!block)
+        crash_null_error("malloc()", file_name, src_line);
+
+    // set bytes for bound checking
+    memset((unsigned char*)block + size, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
+
+    BlockData* block_data = blockdata_create(block, size, file_name, src_line);
+    llistblocks_push_front(get_llistblocks(), block_data);
+    update_alloc_data(block_data);
 
     return block;
 }
 
-void* debug_calloc(size_t num, size_t size, const char* file_name, const char* func_name, int src_line)
+void* debug_calloc(size_t num, size_t size, const char* file_name, int src_line)
 {
-    void* block = calloc(num, size);
+    // additional space for bound-checking bytes
+    void* block = calloc((num * size) + BOUND_CHECK_BYTES_COUNT, 1);
 
-    MemAllocData* data = malloc(sizeof(MemAllocData));
-    data->block = block;
-    data->size = num * size;
-    data->file_name = file_name;
-    data->func_name = func_name;
-    data->src_line = src_line;
+    if (!block)
+        crash_null_error("calloc()", file_name, src_line);
 
-    MemAllocsList* list = get_alloc_list();
-    list_push_back(list, data);
+    // set bytes for bound checking
+    memset((unsigned char*)block + (num * size), BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
+
+    BlockData* block_data = blockdata_create(block, num * size, file_name, src_line);
+    llistblocks_push_front(get_llistblocks(), block_data);
+    update_alloc_data(block_data);
 
     return block;
 }
 
-void* debug_realloc(void* ptr, size_t new_size, const char* file_name, const char* func_name, int src_line)
+void* debug_realloc(void* ptr, size_t new_size, const char* file_name, int src_line)
 {
-    void* block = realloc(ptr, new_size);
+    // this ptr should be in active allocs list
+    BlockData* found_block = llistblocks_get(get_llistblocks(), ptr);
 
-    MemAllocData* data = malloc(sizeof(MemAllocData));
-    MemAllocsList* list = get_alloc_list();
+    // if it's not correct pointer to heap memory
+    // (but nullptr is allowed)
+    if (!found_block && ptr)
+        crash_wrong_ptr("realloc()", file_name, src_line);
 
-    // delete old allocation info
-    data->block = ptr;
-    list_remove(list, data);
+    void* block = realloc(ptr, new_size + BOUND_CHECK_BYTES_COUNT);
 
-    // create new allocation info
-    data->block = block;
-    data->size = new_size;
-    data->file_name = file_name;
-    data->func_name = func_name;
-    data->src_line = src_line;
-    list_push_back(list, data);
+    if (!block)
+        crash_null_error("realloc()", file_name, src_line);
+
+    // set bytes for bound checking
+    memset((unsigned char*)block + new_size, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
+
+    BlockData* block_data = blockdata_create(block, new_size, file_name, src_line);
+
+    // updating existing info instead of removing
+    // and inserting would be better approach, but whatever
+    llistblocks_remove(get_llistblocks(), ptr);
+    llistblocks_push_front(get_llistblocks(), block_data);
+
+    update_alloc_data(block_data);
 
     return block;
 }
 
-void debug_free(void* ptr, const char* file_name, const char* func_name, int src_line)
+void debug_free(void* ptr, const char* file_name, int src_line)
 {
-    MemAllocsList* list = get_alloc_list();
-    MemAllocData data;
-    data.block = ptr;
+    // null ptrs do nothing
+    if (ptr == NULL) return;
 
-    list_remove(list, &data);
+    // this ptr should be in active allocs list
+    BlockData* found_block = llistblocks_get(get_llistblocks(), ptr);
+
+    // if it's not correct pointer to heap memory
+    if (!found_block)
+        crash_wrong_ptr("free()", file_name, src_line);
+
+    // check bytes after block, they shouldn't be changed
+    unsigned char req_bytes[BOUND_CHECK_BYTES_COUNT];
+    memset(req_bytes, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
+
+    if (memcmp((unsigned char*)ptr + found_block->size,
+               req_bytes, BOUND_CHECK_BYTES_COUNT))
+    {
+        crash_bounds_violation(found_block->file_name,
+                               found_block->src_line, found_block->size);
+    }
+
+    // if all good, remove ptr form list of active allocs
+    llistblocks_remove(get_llistblocks(), ptr);
 
     free(ptr);
 }
 
-void print_allocations_file(const char* file_path)
+// ===== Debug versions of allocation functions end =======
+
+void print_to_stream(FILE* stream)
 {
-    FILE* f = fopen(file_path, "a");
-    if (!f)
-    {
-        printf("unable to open file \"%s\" for writing!\n", file_path);
-        return;
-    }
+    // print info about memory leaks
+    fprintf(stream, "%s", "Current unfreed allocations:\n");
 
-    MemAllocsList* list = get_alloc_list();
-    MemAllocsNode* curr_node = list->head;
+    fprintf(stream, "%-42.42s %-5.5s %-10.10s %-10.10s\n",
+            "Source file", "Line", "Mem. ptr", "Bytes");
 
-    fprintf(f, "Allocation(s) that are not freed at the moment of this function call:\n");
-    fprintf(f, "%-42s %-6s %-12s %-20s\n", "file", "line", "memblock", "bytes");
+    size_t total_size = 0;
+    size_t blocks_count = 0;
+
+    LListBlocks* blocks = get_llistblocks();
+    LListBlocksNode* curr_node = blocks->head;
+
     while (curr_node)
     {
-        MemAllocData* d = curr_node->data;
-        fprintf(f, "%-42s %-6u %-12p %-20u\n", d->file_name, d->src_line, d->block, d->size);
+        fprintf(stream, "%-42.42s %-5d %-10p %-10d\n",
+                curr_node->data->file_name,
+                curr_node->data->src_line,
+                curr_node->data->block,
+                curr_node->data->size);
+
+        total_size += curr_node->data->size;
+        blocks_count++;
+
         curr_node = curr_node->ptr_next;
     }
-    fprintf(f, "\n");
+
+    fprintf(stream, "\nUnfreed total: %d bytes from %d allocation(s)\n\n",
+            total_size, blocks_count);
+
+    // print info about heavy-hitter allocations
+    fprintf(stream, "Top-5 heaviest allocations so far:\n");
+
+    fprintf(stream, "%-42.42s %-5.5s %-10.10s %-10.10s\n",
+            "Source file", "Line", "Bytes", "Percentage");
+
+    AllocData** arr = llistallocs_get_sorted_array(get_llistallocs());
+    size_t arr_size = get_llistallocs()->size;
+    size_t total_bytes = get_llistallocs()->bytes_alloc_at_all;
+
+    for (int i = 0; i < 5 && i < arr_size; i++)
+    {
+        fprintf(stream, "%-42.42s %-5d %-10d %.2lf%%\n",
+                arr[i]->file_name,
+                arr[i]->src_line,
+                arr[i]->bytes,
+                arr[i]->bytes / (double)total_bytes * 100.0);
+    }
+
+    free(arr);
+
+    fprintf(stream, "\nAllocated total: %u bytes\n\n", total_bytes);
 }
 
-void print_allocations_console()
+// only this function is available to user
+void mem_debugger_dump_info(int use_file, const char* file_name)
 {
-    MemAllocsList* list = get_alloc_list();
-    MemAllocsNode* curr_node = list->head;
+    if (use_file && !file_name)
+        return;
 
-    printf("Allocation(s) that are not freed at the moment of this function call:\n");
-    printf("%-42s %-6s %-12s %-20s\n", "file", "line", "memblock", "bytes");
-    while (curr_node)
-    {
-        MemAllocData* d = curr_node->data;
-        printf("%-42s %-6u %-12p %-20u\n", d->file_name, d->src_line, d->block, d->size);
-        curr_node = curr_node->ptr_next;
-    }
-    printf("\n");
+    FILE* stream = use_file ? fopen(file_name, "a") : stderr;
+
+    if (stream)
+        print_to_stream(stream);
+
+    if (use_file)
+        fclose(stream);
 }

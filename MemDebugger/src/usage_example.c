@@ -1,29 +1,23 @@
 #include "stdio.h"
-#include "stdlib.h"
 
-// just include this header in every source file
-// you want to track
+// include this header in all files you want
+// to debug memory allocations in
 #include "mem_debugger.h"
 
 int main()
 {
-    int* a = malloc(6);
+    void* ptrs[10];
 
-    // print allocations info at every moment you want!
+    for (int i = 0; i < 10; i++)
+        ptrs[i] = malloc(i + 1);
 
-    // this will print info containing one allocation
-    print_allocations_file("Allocations.txt");
+    // whoops! 5 instead of 10
+    for (int i = 0; i < 5; i++)
+        free(ptrs[i]);
 
-    int* b = calloc(2, 1);
-    int* c = malloc(22);
+    // print data to stderr (console)
+    mem_debugger_dump_info(0, NULL);
 
-    // this will print info containing three allocations
-    print_allocations_console();
-
-    free(a);
-    free(b);
-    free(c);
-
-    // this will print info containing zero allocations
-    print_allocations_console();
+    // ...or print to file
+    mem_debugger_dump_info(1, "alloc_data.txt");
 }
