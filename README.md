@@ -90,6 +90,5 @@ Top-5 heaviest allocations so far:
 Source file                                Line  Bytes      Percentage
 src\usage_example.c                        12    55         100.00%
 
-
 Allocated total: 55 bytes
 ```
