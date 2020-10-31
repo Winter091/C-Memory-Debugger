@@ -13,6 +13,8 @@
 #define BOUND_CHECK_BYTES_COUNT 4
 #define BOUND_CHECK_BYTE_VALUE 218
 
+typedef unsigned long long ull;
+
 // ======== Linked list for blocks implementation =========
 
 typedef struct
@@ -339,7 +341,7 @@ void crash_bounds_violation(const char* file_name, int src_line, size_t block_si
 {
     fprintf(stderr, "Warning!\n");
     fprintf(stderr, "Out-of-bounds writing occured after memory block, allocated at:\n");
-    fprintf(stderr, "%s:%d (%d bytes)\n", file_name, src_line, block_size);
+    fprintf(stderr, "%s:%d (%llu bytes)\n", file_name, src_line, (ull)block_size);
     abort();
 }
 
@@ -486,11 +488,11 @@ void print_to_stream(FILE* stream)
 
     while (curr_node)
     {
-        fprintf(stream, "%-42.42s %-5d %-10p %-10d\n",
+        fprintf(stream, "%-42.42s %-5d %-10p %-10llu\n",
                 curr_node->data->file_name,
                 curr_node->data->src_line,
                 curr_node->data->block,
-                curr_node->data->size);
+                (ull)curr_node->data->size);
 
         total_size += curr_node->data->size;
         blocks_count++;
@@ -498,8 +500,8 @@ void print_to_stream(FILE* stream)
         curr_node = curr_node->ptr_next;
     }
 
-    fprintf(stream, "\nUnfreed total: %d bytes from %d allocation(s)\n\n",
-            total_size, blocks_count);
+    fprintf(stream, "\nUnfreed total: %llu bytes from %llu allocation(s)\n\n",
+            (ull)total_size, (ull)blocks_count);
 
     // print info about heavy-hitter allocations
     fprintf(stream, "Top-5 heaviest allocations so far:\n");
@@ -513,16 +515,16 @@ void print_to_stream(FILE* stream)
 
     for (int i = 0; i < 5 && i < arr_size; i++)
     {
-        fprintf(stream, "%-42.42s %-5d %-10d %.2lf%%\n",
+        fprintf(stream, "%-42.42s %-5d %-10llu %.2lf%%\n",
                 arr[i]->file_name,
                 arr[i]->src_line,
-                arr[i]->bytes,
-                arr[i]->bytes / (double)total_bytes * 100.0);
+                (ull)arr[i]->bytes,
+                (double)arr[i]->bytes / total_bytes * 100.0);
     }
 
     free(arr);
 
-    fprintf(stream, "\nAllocated total: %u bytes\n\n", total_bytes);
+    fprintf(stream, "\nAllocated total: %llu bytes\n\n", (ull)total_bytes);
 }
 
 // only this function is available to user
