@@ -61,7 +61,7 @@ that memory was never deallocated, i.e freed. This theck only happens in `free()
 
 Add two files (*mem_debugger.c* & *mem_debugger.h*) from src folder to your project's src folder;
 
-For each file you want to track allocations in, just include *mem_debugger.h* header in that file.
+Include `mem_debugger.h` in all source files which contain memory (de)allocation.
 
 After that you're able to print all available info at current line using:
 
