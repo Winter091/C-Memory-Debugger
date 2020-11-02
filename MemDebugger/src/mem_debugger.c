@@ -323,25 +323,27 @@ LListAllocs* get_llistallocs()
     return list;
 }
 
-void crash_null_error(const char* from_func, const char* file_name, int src_line)
+void warn_null_return(const char* from_func, const char* file_name, int src_line, size_t block_size)
 {
     fprintf(stderr, "Warning!\n");
-    fprintf(stderr, "%s at %s:%d returned NULL!\n", from_func, file_name, src_line);
+    fprintf(stderr, "%s at %s:%d returned NULL! (size was %llu)\n\n", 
+            from_func, file_name, src_line, (ull)block_size);
     abort();
 }
 
-void crash_wrong_ptr(const char* from_func, const char* file_name, int src_line)
+void warn_wrong_ptr(const char* from_func, const char* file_name, int src_line)
 {
     fprintf(stderr, "Warning!\n");
-    fprintf(stderr, "%s at %s:%d is used with wrong pointer!\n", from_func, file_name, src_line);
+    fprintf(stderr, "%s at %s:%d is used with pointer that does not point to active heap memory!\n\n",
+            from_func, file_name, src_line);
     abort();
 }
 
-void crash_bounds_violation(const char* file_name, int src_line, size_t block_size)
+void warn_bound_violation(const char* file_name, int src_line, size_t block_size)
 {
     fprintf(stderr, "Warning!\n");
     fprintf(stderr, "Out-of-bounds writing occured after memory block, allocated at:\n");
-    fprintf(stderr, "%s:%d (%llu bytes)\n", file_name, src_line, (ull)block_size);
+    fprintf(stderr, "%s:%d (%llu bytes)\n\n", file_name, src_line, (ull)block_size);
     abort();
 }
 
@@ -381,7 +383,7 @@ void* debug_malloc(size_t size, const char* file_name, int src_line)
     void* block = malloc(size + BOUND_CHECK_BYTES_COUNT);
 
     if (!block)
-        crash_null_error("malloc()", file_name, src_line);
+        warn_null_return("malloc()", file_name, src_line, size);
 
     // set bytes for bound checking
     memset((unsigned char*)block + size, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
@@ -399,7 +401,7 @@ void* debug_calloc(size_t num, size_t size, const char* file_name, int src_line)
     void* block = calloc((num * size) + BOUND_CHECK_BYTES_COUNT, 1);
 
     if (!block)
-        crash_null_error("calloc()", file_name, src_line);
+        warn_null_return("calloc()", file_name, src_line, num * size);
 
     // set bytes for bound checking
     memset((unsigned char*)block + (num * size), BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
@@ -419,12 +421,12 @@ void* debug_realloc(void* ptr, size_t new_size, const char* file_name, int src_l
     // if it's not correct pointer to heap memory
     // (but nullptr is allowed)
     if (!found_block && ptr)
-        crash_wrong_ptr("realloc()", file_name, src_line);
+        warn_wrong_ptr("realloc()", file_name, src_line);
 
     void* block = realloc(ptr, new_size + BOUND_CHECK_BYTES_COUNT);
 
     if (!block)
-        crash_null_error("realloc()", file_name, src_line);
+        warn_null_return("realloc()", file_name, src_line, new_size);
 
     // set bytes for bound checking
     memset((unsigned char*)block + new_size, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
@@ -451,7 +453,7 @@ void debug_free(void* ptr, const char* file_name, int src_line)
 
     // if it's not correct pointer to heap memory
     if (!found_block)
-        crash_wrong_ptr("free()", file_name, src_line);
+        warn_wrong_ptr("free()", file_name, src_line);
 
     // check bytes after block, they shouldn't be changed
     unsigned char req_bytes[BOUND_CHECK_BYTES_COUNT];
@@ -460,8 +462,8 @@ void debug_free(void* ptr, const char* file_name, int src_line)
     if (memcmp((unsigned char*)ptr + found_block->size,
                req_bytes, BOUND_CHECK_BYTES_COUNT))
     {
-        crash_bounds_violation(found_block->file_name,
-                               found_block->src_line, found_block->size);
+        warn_bound_violation(found_block->file_name,
+                             found_block->src_line, found_block->size);
     }
 
     // if all good, remove ptr form list of active allocs
