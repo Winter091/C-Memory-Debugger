@@ -479,8 +479,8 @@ void print_to_stream(FILE* stream)
     // print info about memory leaks
     fprintf(stream, "%s", "Current unfreed allocations:\n");
 
-    fprintf(stream, "%-42.42s %-5.5s %-10.10s %-10.10s\n",
-            "Source file", "Line", "Mem. ptr", "Bytes");
+    fprintf(stream, "%-42.42s %-5.5s %-16.16s\n",
+            "Source file", "Line", "Bytes");
 
     size_t total_size = 0;
     size_t blocks_count = 0;
@@ -490,10 +490,9 @@ void print_to_stream(FILE* stream)
 
     while (curr_node)
     {
-        fprintf(stream, "%-42.42s %-5d %-10p %-10llu\n",
+        fprintf(stream, "%-42.42s %-5d %-16llu\n",
                 curr_node->data->file_name,
                 curr_node->data->src_line,
-                curr_node->data->block,
                 (ull)curr_node->data->size);
 
         total_size += curr_node->data->size;
