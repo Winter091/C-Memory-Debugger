@@ -3,7 +3,7 @@
 Use it to track memory leaks, wrong arguments to memory functions, writing to past-block memory 
 and get info about heaviest allocations.
 
-It's super lightweight (just 2 short files), but definitely not fast and memory-efficient.
+It's super lightweight (one header file), but definitely not fast and memory-efficient.
 
 ## Features
 
