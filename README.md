@@ -59,9 +59,16 @@ that memory was never deallocated, i.e freed. This theck only happens in `free()
 
 ## Usage
 
-Add two files (*mem_debugger.c* & *mem_debugger.h*) from src folder to your project's src folder;
+Add *mem_debugger.h* to your project's src folder;
 
-Include `mem_debugger.h` in all source files which contain memory (de)allocation.
+Include `mem_debugger.h` in all source files which contain memory (de)allocation functions;
+
+In **one** of the files, define `MEM_DEBUGGER_IMPLEMENTATION` just before including `mem_debugger.h`, like that:
+
+```
+#define MEM_DEBUGGER_IMPLEMENTATION
+#include "mem_debugger.h"
+```
 
 After that you're able to print all available info at current line using:
 
@@ -77,18 +84,18 @@ See *usage_example.c* for possible usage.
 
 ```
 Current unfreed allocations:
-Source file                                Line  Mem. ptr   Bytes
-src\usage_example.c                        12    00AC5588   10
-src\usage_example.c                        12    00AC2558   9
-src\usage_example.c                        12    00AC2518   8
-src\usage_example.c                        12    00AC24D8   7
-src\usage_example.c                        12    00AC2498   6
+Source file                                Line  Bytes
+MemDebugger/src/usage_example.c            15    10
+MemDebugger/src/usage_example.c            15    9
+MemDebugger/src/usage_example.c            15    8
+MemDebugger/src/usage_example.c            15    7
+MemDebugger/src/usage_example.c            15    6
 
 Unfreed total: 40 bytes from 5 allocation(s)
 
 Top-5 heaviest allocations so far:
 Source file                                Line  Bytes      Percentage
-src\usage_example.c                        12    55         100.00%
+MemDebugger/src/usage_example.c            15    55         100.00%
 
 Allocated total: 55 bytes
 ```
