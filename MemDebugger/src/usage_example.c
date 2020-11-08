@@ -1,7 +1,10 @@
 #include "stdio.h"
 
 // include this header in all files you want
-// to debug memory allocations in
+// to debug memory allocations in;
+// use that define strictly! in one source file
+// to create implementation for debugger.
+#define MEM_DEBUGGER_IMPLEMENTATION
 #include "mem_debugger.h"
 
 int main()
