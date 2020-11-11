@@ -187,9 +187,9 @@ static HashmapAllocs* map_allocs_create(size_t array_size)
 
 static uint32_t map_allocs_hash_func(void* ptr)
 {
-    // use pointer as key, and of cource compiler 
-    // complains about it
-    uint32_t key = (uint32_t)ptr;
+    // use pointer as key
+    // (little detour to remove warning)
+    uint32_t key = (uint32_t)(uintptr_t)ptr;
     
     key = ~key + (key << 15); 
     key = key ^ (key >> 12);
@@ -578,22 +578,19 @@ void* debug_realloc(void* ptr, size_t new_size, const char* file_name, int src_l
 
     AllocData* block_data = blockdata_create(block, new_size, file_name, src_line);
 
-    // realloc decided to allocate new block instead
-    // of expanding previous one
-    if (ptr && block != ptr)
+   // ptr = NULL, realloc acts as malloc
+    if (!ptr)
+        map_allocs_insert(instance_map_allocs(), block_data);
+
+    // realloc expanded existing block
+    else if (ptr == block)
+        map_allocs_update(instance_map_allocs(), block_data);
+
+    // realloc decided to allocate new block
+    else
     {
         map_allocs_remove(instance_map_allocs(), ptr);
         map_allocs_insert(instance_map_allocs(), block_data);
-    }
-
-    // realloc expanded previous block or ptr == NULL
-    else
-    {
-        // first-time allocating that block, ptr == NULL
-        if (!ptr)
-            map_allocs_insert(instance_map_allocs(), block_data);
-        else
-            map_allocs_update(instance_map_allocs(), block_data);
     }
 
     update_alloc_data(block_data);
@@ -632,6 +629,29 @@ void debug_free(void* ptr, const char* file_name, int src_line)
 
 // ======= Debug versions of allocation functions end ==========
 
+// if strlen > n, prints last n characters of the string
+// otherwise, fill remaining space with spaces
+static void print_str_with_width(FILE* stream, const char* str, int n)
+{
+    int str_len = strlen(str);
+
+    if (str_len <= n)
+    {
+        fprintf(stream, "%s", str);
+        for (int i = str_len; i < n; i++)
+            putc(' ', stream);
+    }
+
+    else
+    {
+        for (int i = 0; i < 3; i++)
+            putc('.', stream);
+        
+        if (n > 3)
+            fprintf(stream, "%s", str + str_len - n + 3);
+    }
+}
+
 static void print_info(FILE* stream)
 {
     // print info about memory leaks
@@ -651,8 +671,8 @@ static void print_info(FILE* stream)
 
         while (curr_node)
         {
-            fprintf(stream, "%-42.42s %-5d %-16llu\n",
-                    curr_node->data->file_name,
+            print_str_with_width(stream, curr_node->data->file_name, 41);
+            fprintf(stream, "  %-5d %-16llu\n",
                     curr_node->data->src_line,
                     (ull)curr_node->data->size);
 
@@ -678,11 +698,11 @@ static void print_info(FILE* stream)
 
     for (int i = 0; i < 5 && i < arr_size; i++)
     {
-        fprintf(stream, "%-42.42s %-5d %-10llu %.2lf%%\n",
-                arr[i]->file_name,
+        print_str_with_width(stream, arr[i]->file_name, 41);
+        fprintf(stream, "  %-5d %-10llu %.2lf%%\n",
                 arr[i]->src_line,
                 (ull)arr[i]->bytes,
-                (double)arr[i]->bytes / total_bytes * 100.0);
+                100.0 * (double)arr[i]->bytes / total_bytes);
     }
 
     free(arr);
