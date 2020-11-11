@@ -1,4 +1,5 @@
 #include "stdio.h"
+#include "stdlib.h"
 
 // include this header in all files you want
 // to debug memory allocations in;

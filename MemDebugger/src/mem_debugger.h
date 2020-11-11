@@ -12,19 +12,23 @@ void mem_debugger_dump_info(int use_file, const char* file_name);
 
 #ifdef MEM_DEBUGGER_IMPLEMENTATION
 
-// to use unsafe c functions without warnings
+// to use unsafe c functions without warning
 #define _CRT_SECURE_NO_WARNINGS
 
 #include "stdio.h"
 #include "string.h"
+#include "stdint.h"
 
 // parameters of bytes written afrer any allocated memory block
 #define BOUND_CHECK_BYTES_COUNT 4
 #define BOUND_CHECK_BYTE_VALUE 218
 
+// i'm not sure which value is optimal
+#define HASHMAP_LIST_LEN 1024
+
 typedef unsigned long long ull;
 
-// ======== Linked list for blocks implementation =========
+// ======== HashMap for for allocations implementation =========
 
 typedef struct
 {
@@ -33,34 +37,34 @@ typedef struct
     const char* file_name;
     int src_line;
 }
-BlockData;
+AllocData;
 
-typedef struct LListBlocksNode
+typedef struct ListAllocDataNode
 {
-    BlockData* data;
-    struct LListBlocksNode* ptr_next;
+    AllocData* data;
+    struct ListAllocDataNode* ptr_next;
 }
-LListBlocksNode;
+ListAllocDataNode;
 
 typedef struct
 {
-    LListBlocksNode *head, *tail;
+    ListAllocDataNode *head, *tail;
     size_t size;
 }
-LListBlocks;
+ListAllocs;
 
-static LListBlocks* llistblocks_create()
+static ListAllocs* list_allocs_create()
 {
-    LListBlocks* llist = malloc(sizeof(LListBlocks));
+    ListAllocs* llist = malloc(sizeof(ListAllocs));
     llist->head = NULL;
     llist->tail = NULL;
     llist->size = 0;
     return llist;
 }
 
-static void llistblocks_push_front(LListBlocks* llist, BlockData* elem)
+static void list_allocs_push_front(ListAllocs* llist, AllocData* elem)
 {
-    LListBlocksNode* node = malloc(sizeof(LListBlocksNode));
+    ListAllocDataNode* node = malloc(sizeof(ListAllocDataNode));
     node->data = elem;
     node->ptr_next = NULL;
 
@@ -72,7 +76,7 @@ static void llistblocks_push_front(LListBlocks* llist, BlockData* elem)
 
     else
     {
-        LListBlocksNode* prev_head = llist->head;
+        ListAllocDataNode* prev_head = llist->head;
         llist->head = node;
         llist->head->ptr_next = prev_head;
     }
@@ -80,7 +84,7 @@ static void llistblocks_push_front(LListBlocks* llist, BlockData* elem)
     llist->size++;
 }
 
-static int llistblocks_remove(LListBlocks* llist, void* block)
+static int list_allocs_remove(ListAllocs* llist, void* block)
 {
     if (!llist->size) return 0;
 
@@ -102,7 +106,7 @@ static int llistblocks_remove(LListBlocks* llist, void* block)
     // if data is in head
     if (llist->head->data->block == block)
     {
-        LListBlocksNode* prev_head = llist->head;
+        ListAllocDataNode* prev_head = llist->head;
         llist->head = llist->head->ptr_next;
         llist->size--;
         free(prev_head->data);
@@ -111,7 +115,7 @@ static int llistblocks_remove(LListBlocks* llist, void* block)
     }
 
     // elem should be in curr_node->ptr_next
-    LListBlocksNode* curr_node = llist->head;
+    ListAllocDataNode* curr_node = llist->head;
     while (curr_node->ptr_next && curr_node->ptr_next->data->block != block)
         curr_node = curr_node->ptr_next;
 
@@ -121,7 +125,7 @@ static int llistblocks_remove(LListBlocks* llist, void* block)
     // if data is in tail
     if (curr_node->ptr_next == llist->tail)
     {
-        LListBlocksNode* prev_tail = llist->tail;
+        ListAllocDataNode* prev_tail = llist->tail;
         llist->tail = curr_node;
         llist->tail->ptr_next = NULL;
         free(prev_tail->data);
@@ -131,7 +135,7 @@ static int llistblocks_remove(LListBlocks* llist, void* block)
     // data is not in tail
     else
     {
-        LListBlocksNode* node_to_del = curr_node->ptr_next;
+        ListAllocDataNode* node_to_del = curr_node->ptr_next;
         curr_node->ptr_next = curr_node->ptr_next->ptr_next;
         free(node_to_del->data);
         free(node_to_del);
@@ -141,7 +145,7 @@ static int llistblocks_remove(LListBlocks* llist, void* block)
     return 1;
 }
 
-static BlockData* llistblocks_get(LListBlocks* llist, void* block)
+static AllocData* list_allocs_get(ListAllocs* llist, void* block)
 {
     if (llist->size == 0) return NULL;
 
@@ -151,16 +155,97 @@ static BlockData* llistblocks_get(LListBlocks* llist, void* block)
     if (llist->tail->data->block == block)
         return llist->tail->data;
 
-    LListBlocksNode* curr_node = llist->head;
+    ListAllocDataNode* curr_node = llist->head;
     while (curr_node && curr_node->data->block != block)
         curr_node = curr_node->ptr_next;
 
     return curr_node ? curr_node->data : NULL;
 }
 
-// ====== Linked list for blocks implementation end =======
+typedef struct
+{
+    ListAllocs** array;
+    
+    size_t array_size;
+    size_t size;
+}
+HashmapAllocs;
 
-// == Linked list for heavy allocs implementation =========
+static HashmapAllocs* map_allocs_create(size_t array_size)
+{
+    HashmapAllocs* map = malloc(array_size * sizeof(HashmapAllocs));
+
+    map->array = malloc(array_size * sizeof(ListAllocs*));
+    for (int i = 0; i < array_size; i++)
+        map->array[i] = list_allocs_create();
+    
+    map->array_size = array_size;
+    map->size = 0;
+    
+    return map;
+}
+
+static uint32_t map_allocs_hash_func(void* ptr)
+{
+    // use pointer as key, and of cource compiler 
+    // complains about it
+    uint32_t key = (uint32_t)ptr;
+    
+    key = ~key + (key << 15); 
+    key = key ^ (key >> 12);
+    key = key + (key << 2);
+    key = key ^ (key >> 4);
+    key = key * 2057; 
+    key = key ^ (key >> 16);
+
+    return key;
+}
+
+static void map_allocs_insert(HashmapAllocs* map, AllocData* elem)
+{
+    uint32_t index = map_allocs_hash_func(elem->block) % map->array_size;
+    list_allocs_push_front(map->array[index], elem);
+    map->size++;
+}
+
+static int map_allocs_remove(HashmapAllocs* map, void* block)
+{
+    uint32_t index = map_allocs_hash_func(block) % map->array_size;
+
+    if (list_allocs_remove(map->array[index], block))
+    {
+        map->size--;
+        return 1;
+    }
+    return 0;
+}
+
+// search node with node->data->block == data->block
+// and set new data for this node
+static void  map_allocs_update(HashmapAllocs* map, AllocData* data)
+{
+    uint32_t index = map_allocs_hash_func(data->block) % map->array_size;
+    
+    ListAllocDataNode* curr_node = map->array[index]->head;
+
+    while (curr_node->data->block != data->block)
+        curr_node = curr_node->ptr_next;
+
+    free(curr_node->data);
+    curr_node->data = data;
+}
+
+// return NULL if block is not found, otherwise return
+// AllocData* element where data->block == block
+static AllocData* map_allocs_get(HashmapAllocs* map, void* block)
+{
+    uint32_t index = map_allocs_hash_func(block) % map->array_size;
+    return list_allocs_get(map->array[index], block);
+}
+
+// ====== HashMap for for allocations implementation end =======
+
+// ======== HashMap for for alloc sites implementation =========
 
 typedef struct
 {
@@ -168,36 +253,34 @@ typedef struct
     const char* file_name;
     int src_line;
 }
-AllocData;
+AllocSiteData;
 
-typedef struct LListAllocsNode
+typedef struct ListAllocSiteNode
 {
-    AllocData* data;
-    struct LListAllocsNode* ptr_next;
+    AllocSiteData* data;
+    struct ListAllocSiteNode* ptr_next;
 }
-LListAllocsNode;
+ListAllocSiteNode;
 
 typedef struct
 {
-    LListAllocsNode *head, *tail;
+    ListAllocSiteNode *head, *tail;
     size_t size;
-    size_t bytes_alloc_at_all;
 }
-LListAllocs;
+ListAllocSites;
 
-static LListAllocs* llistallocs_create()
+static ListAllocSites* list_allocsites_create()
 {
-    LListAllocs* llist = malloc(sizeof(LListAllocs));
+    ListAllocSites* llist = malloc(sizeof(ListAllocSites));
     llist->head = NULL;
     llist->tail = NULL;
     llist->size = 0;
-    llist->bytes_alloc_at_all = 0;
     return llist;
 }
 
-static void llistallocs_push_front(LListAllocs* llist, AllocData* elem)
+static void list_allocsites_push_front(ListAllocSites* llist, AllocSiteData* elem)
 {
-    LListAllocsNode* node = malloc(sizeof(LListAllocsNode));
+    ListAllocSiteNode* node = malloc(sizeof(ListAllocSiteNode));
     node->data = elem;
     node->ptr_next = NULL;
 
@@ -209,7 +292,7 @@ static void llistallocs_push_front(LListAllocs* llist, AllocData* elem)
 
     else
     {
-        LListAllocsNode* prev_head = llist->head;
+        ListAllocSiteNode* prev_head = llist->head;
         llist->head = node;
         llist->head->ptr_next = prev_head;
     }
@@ -217,7 +300,7 @@ static void llistallocs_push_front(LListAllocs* llist, AllocData* elem)
     llist->size++;
 }
 
-static AllocData* llistallocs_get(LListAllocs* llist, BlockData* elem)
+static AllocSiteData* list_allocsites_get(ListAllocSites* llist, AllocData* elem)
 {
     if (llist->size == 0) return NULL;
 
@@ -229,17 +312,15 @@ static AllocData* llistallocs_get(LListAllocs* llist, BlockData* elem)
         && !strcmp(llist->tail->data->file_name, elem->file_name))
         return llist->tail->data;
 
-    LListAllocsNode* curr_node = llist->head;
+    ListAllocSiteNode* curr_node = llist->head;
     while (curr_node && (curr_node->data->src_line != elem->src_line || strcmp(curr_node->data->file_name, elem->file_name)))
         curr_node = curr_node->ptr_next;
 
     return curr_node ? curr_node->data : NULL;
 }
 
-static void llistallocs_update(LListAllocs* llist, BlockData* elem)
+static void list_allocsites_update(ListAllocSites* llist, AllocData* elem)
 {
-    llist->bytes_alloc_at_all += elem->size;
-
     // find particular allocation site to add size 
     if (llist->head->data->src_line == elem->src_line
         && !strcmp(llist->head->data->file_name, elem->file_name))
@@ -251,7 +332,7 @@ static void llistallocs_update(LListAllocs* llist, BlockData* elem)
 
     else
     {
-        LListAllocsNode* curr_node = llist->head;
+        ListAllocSiteNode* curr_node = llist->head;
 
         while (curr_node->data->src_line != elem->src_line || strcmp(curr_node->data->file_name, elem->file_name))
             curr_node = curr_node->ptr_next;
@@ -260,49 +341,126 @@ static void llistallocs_update(LListAllocs* llist, BlockData* elem)
     }
 }
 
+typedef struct
+{
+    ListAllocSites** array;
+    
+    size_t bytes_alloc_at_all;
+    size_t array_size;
+    size_t size;
+}
+HashmapAllocSites;
+
+static HashmapAllocSites* map_allocsites_create(size_t array_size)
+{
+    HashmapAllocSites* map = malloc(array_size * sizeof(HashmapAllocSites));
+
+    map->array = malloc(array_size * sizeof(ListAllocSites*));
+    for (int i = 0; i < array_size; i++)
+        map->array[i] = list_allocsites_create();
+    
+    map->bytes_alloc_at_all = 0;
+    map->array_size = array_size;
+    map->size = 0;
+    
+    return map;
+}
+
+static uint32_t map_allocsites_hash_func(const char* file, int line)
+{
+    // firstly hash using file name
+    uint32_t key = 5381;
+
+    int c;
+    while (c = *file++)
+        key = ((key << 5) + key) + c;
+    
+    // then hash using line
+    key = ~line + (key << 15); 
+    key = key ^ (key >> 12);
+    key = key + (key << 2);
+    key = key ^ (key >> 4);
+    key = key * 2057; 
+    key = key ^ (key >> 16);
+
+    return key;
+}
+
+static void map_allocsites_insert(HashmapAllocSites* map, AllocSiteData* data)
+{
+    uint32_t index = map_allocsites_hash_func(data->file_name, data->src_line) % map->array_size;
+    list_allocsites_push_front(map->array[index], data);
+    map->size++;
+}
+
+// return NULL if data is not found, otherwise return
+// AllocSiteData* with file name and src_line identical to given AllocData
+static AllocSiteData* map_allocsites_get(HashmapAllocSites* map, AllocData* data)
+{
+    uint32_t index = map_allocsites_hash_func(data->file_name, data->src_line) % map->array_size;
+    return list_allocsites_get(map->array[index], data);
+}
+
+// Updates existing allocation site with new bytes
+static void map_allocsites_update(HashmapAllocSites* map, AllocData* data)
+{
+    map->bytes_alloc_at_all += data->size;
+    
+    uint32_t index = map_allocsites_hash_func(data->file_name, data->src_line) % map->array_size;
+    list_allocsites_update(map->array[index], data);
+}
+
 static int compar_func(const void* p1, const void* p2)
 {
-    AllocData* d1 = *(AllocData**)p1;
-    AllocData* d2 = *(AllocData**)p2;
+    AllocSiteData* d1 = *(AllocSiteData**)p1;
+    AllocSiteData* d2 = *(AllocSiteData**)p2;
 
     if (d1->bytes > d2->bytes) return -1;
     else if (d1->bytes == d2->bytes) return 0;
     else return 1;
 }
 
-static AllocData** llistallocs_get_sorted_array(LListAllocs* llist)
+// returns descending-sorted array with allocation sites. It's 
+// descending-sorted for easy printing, just print first n elems
+// and you'll get n heaviest allocation sites
+static AllocSiteData** map_allocsites_get_sorted_array(HashmapAllocSites* map)
 {
-    AllocData** arr = malloc(llist->size * sizeof(AllocData*));
+    //AllocSiteData** arr = realloc(llist->size * sizeof(AllocSiteData*));
+    AllocSiteData** arr = malloc(map->size * sizeof(AllocSiteData*));
+    int curr_ptr = 0;
 
-    LListAllocsNode* curr_node = llist->head;
-    for (int i = 0; i < llist->size; i++)
+    for (int i = 0; i < map->array_size; i++)
     {
-        arr[i] = curr_node->data;
-        curr_node = curr_node->ptr_next;
+        ListAllocSiteNode* curr_node = map->array[i]->head;
+        while (curr_node)
+        {
+            arr[curr_ptr++] = curr_node->data;
+            curr_node = curr_node->ptr_next;
+        }
     }
 
-    qsort(arr, llist->size, sizeof(AllocData*), compar_func);
+    qsort(arr, map->size, sizeof(AllocSiteData*), compar_func);
 
     return arr;
 }
 
-// == Linked list for heavy allocs implementation end =====
+// ====== HashMap for for alloc sites implementation end =======
 
-// ================== Helper functions ====================
+// ==================== Helper functions =======================
 
-// singleton lists are controlled by these 2 functions
-static LListBlocks* get_llistblocks()
+// singleton maps are controlled by these 2 functions
+static HashmapAllocs* instance_map_allocs()
 {
-    static LListBlocks* list = NULL;
-    if (!list) list = llistblocks_create();
-    return list;
+    static HashmapAllocs* map = NULL;
+    if (!map) map = map_allocs_create(HASHMAP_LIST_LEN);
+    return map;
 }
 
-static LListAllocs* get_llistallocs()
+static HashmapAllocSites* instance_map_allocsites()
 {
-    static LListAllocs* list = NULL;
-    if (!list) list = llistallocs_create();
-    return list;
+    static HashmapAllocSites* map = NULL;
+    if (!map) map = map_allocsites_create(HASHMAP_LIST_LEN);
+    return map;
 }
 
 static void warn_null_return(const char* from_func, const char* file_name, int src_line, size_t block_size)
@@ -329,9 +487,9 @@ static void warn_bound_violation(const char* file_name, int src_line, size_t blo
     abort();
 }
 
-static BlockData* blockdata_create(void* block, size_t size, const char* file_name, int src_line)
+static AllocData* blockdata_create(void* block, size_t size, const char* file_name, int src_line)
 {
-    BlockData* block_data = malloc(sizeof(BlockData));
+    AllocData* block_data = malloc(sizeof(AllocData));
     block_data->block = block;
     block_data->size = size;
     block_data->file_name = file_name;
@@ -339,29 +497,30 @@ static BlockData* blockdata_create(void* block, size_t size, const char* file_na
     return block_data;
 }
 
-static void update_alloc_data(BlockData* block_data)
+static void update_alloc_data(AllocData* block_data)
 {
     // try to find that particular allocation site
-    AllocData* alloc_data = llistallocs_get(get_llistallocs(), block_data);
+    AllocSiteData* alloc_data = map_allocsites_get(instance_map_allocsites(), block_data);
 
     // if there were no allocations on that line previously, 
-    // create new AllocData structure and add it to list
+    // create new AllocSiteData structure and add it to map
     if (!alloc_data)
     {
-        alloc_data = malloc(sizeof(AllocData));
+        alloc_data = malloc(sizeof(AllocSiteData));
         alloc_data->bytes = 0;
         alloc_data->src_line = block_data->src_line;
         alloc_data->file_name = block_data->file_name;
-        llistallocs_push_front(get_llistallocs(), alloc_data);
+        map_allocsites_insert(instance_map_allocsites(), alloc_data);
     }
 
-    // update total bytes allocated at that line in that file
-    llistallocs_update(get_llistallocs(), block_data);
+    // update total bytes allocated at that line in that file,
+    // the allocation site is guranteed to be in map
+    map_allocsites_update(instance_map_allocsites(), block_data);
 }
 
-// ================ Helper functions end ==================
+// =================== Helper functions end ====================
 
-// ======= Debug versions of allocation functions =========
+// ========== Debug versions of allocation functions ===========
 
 void* debug_malloc(size_t size, const char* file_name, int src_line)
 {
@@ -374,8 +533,8 @@ void* debug_malloc(size_t size, const char* file_name, int src_line)
     // set bytes for bound checking
     memset((unsigned char*)block + size, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
 
-    BlockData* block_data = blockdata_create(block, size, file_name, src_line);
-    llistblocks_push_front(get_llistblocks(), block_data);
+    AllocData* block_data = blockdata_create(block, size, file_name, src_line);
+    map_allocs_insert(instance_map_allocs(), block_data);
     update_alloc_data(block_data);
 
     return block;
@@ -392,8 +551,8 @@ void* debug_calloc(size_t num, size_t size, const char* file_name, int src_line)
     // set bytes for bound checking
     memset((unsigned char*)block + (num * size), BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
 
-    BlockData* block_data = blockdata_create(block, num * size, file_name, src_line);
-    llistblocks_push_front(get_llistblocks(), block_data);
+    AllocData* block_data = blockdata_create(block, num * size, file_name, src_line);
+    map_allocs_insert(instance_map_allocs(), block_data);
     update_alloc_data(block_data);
 
     return block;
@@ -401,8 +560,8 @@ void* debug_calloc(size_t num, size_t size, const char* file_name, int src_line)
 
 void* debug_realloc(void* ptr, size_t new_size, const char* file_name, int src_line)
 {
-    // this ptr should be in active allocs list
-    BlockData* found_block = llistblocks_get(get_llistblocks(), ptr);
+    // this ptr should be in active allocations map
+    AllocData* found_block = map_allocs_get(instance_map_allocs(), ptr);
 
     // if it's not correct pointer to heap memory
     // (but nullptr is allowed), crash
@@ -417,12 +576,25 @@ void* debug_realloc(void* ptr, size_t new_size, const char* file_name, int src_l
     // set bytes for bound checking
     memset((unsigned char*)block + new_size, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
 
-    BlockData* block_data = blockdata_create(block, new_size, file_name, src_line);
+    AllocData* block_data = blockdata_create(block, new_size, file_name, src_line);
 
-    // updating existing info instead of removing
-    // and inserting would be better approach, but whatever
-    llistblocks_remove(get_llistblocks(), ptr);
-    llistblocks_push_front(get_llistblocks(), block_data);
+    // realloc decided to allocate new block instead
+    // of expanding previous one
+    if (ptr && block != ptr)
+    {
+        map_allocs_remove(instance_map_allocs(), ptr);
+        map_allocs_insert(instance_map_allocs(), block_data);
+    }
+
+    // realloc expanded previous block or ptr == NULL
+    else
+    {
+        // first-time allocating that block, ptr == NULL
+        if (!ptr)
+            map_allocs_insert(instance_map_allocs(), block_data);
+        else
+            map_allocs_update(instance_map_allocs(), block_data);
+    }
 
     update_alloc_data(block_data);
 
@@ -434,33 +606,33 @@ void debug_free(void* ptr, const char* file_name, int src_line)
     // nullptrs do nothing
     if (ptr == NULL) return;
 
-    // this ptr should be in active allocs list
-    BlockData* found_block = llistblocks_get(get_llistblocks(), ptr);
+    // this ptr should be in active allocs map
+    AllocData* found_block = map_allocs_get(instance_map_allocs(), ptr);
 
     // if it's not correct pointer to heap memory, crash
     if (!found_block)
         warn_wrong_ptr("free()", file_name, src_line);
 
     // check bytes after block, they shouldn't be changed
-    unsigned char req_bytes[BOUND_CHECK_BYTES_COUNT];
-    memset(req_bytes, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
+    unsigned char required_bytes[BOUND_CHECK_BYTES_COUNT];
+    memset(required_bytes, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
 
     if (memcmp((unsigned char*)ptr + found_block->size,
-               req_bytes, BOUND_CHECK_BYTES_COUNT))
+               required_bytes, BOUND_CHECK_BYTES_COUNT))
     {
         warn_bound_violation(found_block->file_name,
                              found_block->src_line, found_block->size);
     }
 
-    // if all good, remove ptr form list of active allocs
-    llistblocks_remove(get_llistblocks(), ptr);
+    // if all good, remove ptr form map of active allocs
+    map_allocs_remove(instance_map_allocs(), ptr);
 
     free(ptr);
 }
 
-// ===== Debug versions of allocation functions end =======
+// ======= Debug versions of allocation functions end ==========
 
-static void print_to_stream(FILE* stream)
+static void print_info(FILE* stream)
 {
     // print info about memory leaks
     fprintf(stream, "%s", "Current unfreed allocations:\n");
@@ -471,20 +643,24 @@ static void print_to_stream(FILE* stream)
     size_t total_size = 0;
     size_t blocks_count = 0;
 
-    LListBlocks* blocks = get_llistblocks();
-    LListBlocksNode* curr_node = blocks->head;
+    HashmapAllocs* map = instance_map_allocs();
 
-    while (curr_node)
+    for (int i = 0; i < map->array_size; i++)
     {
-        fprintf(stream, "%-42.42s %-5d %-16llu\n",
-                curr_node->data->file_name,
-                curr_node->data->src_line,
-                (ull)curr_node->data->size);
+        ListAllocDataNode* curr_node = map->array[i]->head;
 
-        total_size += curr_node->data->size;
-        blocks_count++;
+        while (curr_node)
+        {
+            fprintf(stream, "%-42.42s %-5d %-16llu\n",
+                    curr_node->data->file_name,
+                    curr_node->data->src_line,
+                    (ull)curr_node->data->size);
 
-        curr_node = curr_node->ptr_next;
+            total_size += curr_node->data->size;
+            blocks_count++;
+
+            curr_node = curr_node->ptr_next;
+        }
     }
 
     fprintf(stream, "\nUnfreed total: %llu bytes from %llu allocation(s)\n\n",
@@ -496,9 +672,9 @@ static void print_to_stream(FILE* stream)
     fprintf(stream, "%-42.42s %-5.5s %-10.10s %-10.10s\n",
             "Source file", "Line", "Bytes", "Percentage");
 
-    AllocData** arr = llistallocs_get_sorted_array(get_llistallocs());
-    size_t arr_size = get_llistallocs()->size;
-    size_t total_bytes = get_llistallocs()->bytes_alloc_at_all;
+    AllocSiteData** arr = map_allocsites_get_sorted_array(instance_map_allocsites());
+    size_t arr_size = instance_map_allocsites()->size;
+    size_t total_bytes = instance_map_allocsites()->bytes_alloc_at_all;
 
     for (int i = 0; i < 5 && i < arr_size; i++)
     {
@@ -527,7 +703,7 @@ void mem_debugger_dump_info(int use_file, const char* file_name)
     FILE* stream = use_file ? fopen(file_name, "a") : stderr;
 
     if (stream)
-        print_to_stream(stream);
+        print_info(stream);
     else
     {
         fprintf(stderr, "Warning!\n");
@@ -541,6 +717,7 @@ void mem_debugger_dump_info(int use_file, const char* file_name)
 
 #endif //MEM_DEBUGGER_IMPLEMENTATION
 
+// Actual defines which will replace memory functions
 #ifndef MEM_DEBUGGER_DISABLE
 #define malloc(size)           debug_malloc (size,          __FILE__, __LINE__)
 #define calloc(num, size)      debug_calloc (num, size,     __FILE__, __LINE__)
