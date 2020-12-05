@@ -1,3 +1,34 @@
+/*
+    This is memory debugger, although the name "memory checker"
+    is more accurate.
+
+    Written by world-known company, SND Corp, 2020.
+
+    There are some settings available using defines;
+    just define them before including mem_debugger, like that:
+
+    #define MEM_DEBUGGER_NO_BOUND_CHECK
+    #define MEM_DEBUGGER_IMPLEMENTATION
+    #include "mem_debugger.h"
+
+    MEM_DEBUGGER_NO_BOUND_CHECK
+        Define it in order not to check bytes after allocation area.
+        It will help you not to crash in attempt to read there 
+        bytes. Crash may happen if the memory block was not allocated 
+        using debug_# version, for example, in external library.
+    
+    MEM_DEBUGGER_NO_WRONG_PTR_WARN
+        Define it in order not to check if pointer is wrong in the context.
+        The same reasons: memory block may be allocated in external
+        code, where alloc function is not overloaded with its debug 
+        version. In that case, pointer won't be added in list of 
+        allocations, and during free() there will be importunate warn.
+
+    MEM_DEBUGGER_DISABLE
+        Define it in order not to overload memory functions with their
+        debug versions in current file.
+*/
+
 #ifndef MEM_DEBUGGER_H_
 #define MEM_DEBUGGER_H_
 
@@ -228,8 +259,14 @@ static void  map_allocs_update(HashmapAllocs* map, AllocData* data)
     
     ListAllocDataNode* curr_node = map->array[index]->head;
 
-    while (curr_node->data->block != data->block)
+    while (curr_node && curr_node->data->block != data->block)
         curr_node = curr_node->ptr_next;
+
+    if (!curr_node)
+    {
+        map_allocs_insert(map, data);
+        return;
+    }
 
     free(curr_node->data);
     curr_node->data = data;
@@ -468,7 +505,6 @@ static void warn_null_return(const char* from_func, const char* file_name, int s
     fprintf(stderr, "Warning!\n");
     fprintf(stderr, "%s at %s:%d returned NULL! (size was %llu)\n\n", 
             from_func, file_name, src_line, (ull)block_size);
-    abort();
 }
 
 static void warn_wrong_ptr(const char* from_func, const char* file_name, int src_line)
@@ -476,7 +512,6 @@ static void warn_wrong_ptr(const char* from_func, const char* file_name, int src
     fprintf(stderr, "Warning!\n");
     fprintf(stderr, "%s at %s:%d is used with pointer that does not point to active heap memory!\n\n",
             from_func, file_name, src_line);
-    abort();
 }
 
 static void warn_bound_violation(const char* file_name, int src_line, size_t block_size)
@@ -487,35 +522,35 @@ static void warn_bound_violation(const char* file_name, int src_line, size_t blo
     abort();
 }
 
-static AllocData* blockdata_create(void* block, size_t size, const char* file_name, int src_line)
+static AllocData* allocdata_create(void* block, size_t size, const char* file_name, int src_line)
 {
-    AllocData* block_data = malloc(sizeof(AllocData));
-    block_data->block = block;
-    block_data->size = size;
-    block_data->file_name = file_name;
-    block_data->src_line = src_line;
-    return block_data;
+    AllocData* alloc_data = malloc(sizeof(AllocData));
+    alloc_data->block = block;
+    alloc_data->size = size;
+    alloc_data->file_name = file_name;
+    alloc_data->src_line = src_line;
+    return alloc_data;
 }
 
-static void update_alloc_data(AllocData* block_data)
+static void allocdata_update(AllocData* alloc_data)
 {
     // try to find that particular allocation site
-    AllocSiteData* alloc_data = map_allocsites_get(instance_map_allocsites(), block_data);
+    AllocSiteData* allocsite_data = map_allocsites_get(instance_map_allocsites(), alloc_data);
 
     // if there were no allocations on that line previously, 
     // create new AllocSiteData structure and add it to map
-    if (!alloc_data)
+    if (!allocsite_data)
     {
-        alloc_data = malloc(sizeof(AllocSiteData));
-        alloc_data->bytes = 0;
-        alloc_data->src_line = block_data->src_line;
-        alloc_data->file_name = block_data->file_name;
-        map_allocsites_insert(instance_map_allocsites(), alloc_data);
+        allocsite_data = malloc(sizeof(AllocSiteData));
+        allocsite_data->bytes = 0;
+        allocsite_data->src_line = alloc_data->src_line;
+        allocsite_data->file_name = alloc_data->file_name;
+        map_allocsites_insert(instance_map_allocsites(), allocsite_data);
     }
 
     // update total bytes allocated at that line in that file,
     // the allocation site is guranteed to be in map
-    map_allocsites_update(instance_map_allocsites(), block_data);
+    map_allocsites_update(instance_map_allocsites(), alloc_data);
 }
 
 // =================== Helper functions end ====================
@@ -524,76 +559,90 @@ static void update_alloc_data(AllocData* block_data)
 
 void* debug_malloc(size_t size, const char* file_name, int src_line)
 {
+#ifdef MEM_DEBUGGER_NO_BOUND_CHECK
+    void* block = malloc(size);
+#else
     // additional space for bound-checking bytes
     void* block = malloc(size + BOUND_CHECK_BYTES_COUNT);
+    
+    // set bytes for bound checking
+    memset((unsigned char*)block + size, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
+#endif
 
     if (!block)
         warn_null_return("malloc()", file_name, src_line, size);
 
-    // set bytes for bound checking
-    memset((unsigned char*)block + size, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
-
-    AllocData* block_data = blockdata_create(block, size, file_name, src_line);
-    map_allocs_insert(instance_map_allocs(), block_data);
-    update_alloc_data(block_data);
+    AllocData* alloc_data = allocdata_create(block, size, file_name, src_line);
+    map_allocs_insert(instance_map_allocs(), alloc_data);
+    allocdata_update(alloc_data);
 
     return block;
 }
 
 void* debug_calloc(size_t num, size_t size, const char* file_name, int src_line)
 {
+#ifdef MEM_DEBUGGER_NO_BOUND_CHECK
+    void* block = calloc(num, size);
+#else
     // additional space for bound-checking bytes
     void* block = calloc((num * size) + BOUND_CHECK_BYTES_COUNT, 1);
+    
+    // set bytes for bound checking
+    memset((unsigned char*)block + (num * size), BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
+#endif
 
     if (!block)
         warn_null_return("calloc()", file_name, src_line, num * size);
 
-    // set bytes for bound checking
-    memset((unsigned char*)block + (num * size), BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
-
-    AllocData* block_data = blockdata_create(block, num * size, file_name, src_line);
-    map_allocs_insert(instance_map_allocs(), block_data);
-    update_alloc_data(block_data);
+    AllocData* alloc_data = allocdata_create(block, num * size, file_name, src_line);
+    map_allocs_insert(instance_map_allocs(), alloc_data);
+    allocdata_update(alloc_data);
 
     return block;
 }
 
 void* debug_realloc(void* ptr, size_t new_size, const char* file_name, int src_line)
 {
+#ifndef MEM_DEBUGGER_NO_WRONG_PTR_WARN
     // this ptr should be in active allocations map
     AllocData* found_block = map_allocs_get(instance_map_allocs(), ptr);
 
     // if it's not correct pointer to heap memory
-    // (but nullptr is allowed), crash
+    // (but nullptr is allowed), warn
     if (!found_block && ptr)
         warn_wrong_ptr("realloc()", file_name, src_line);
+#endif
 
+#ifdef MEM_DEBUGGER_NO_BOUND_CHECK
+    void* block = realloc(ptr, new_size);
+#else
     void* block = realloc(ptr, new_size + BOUND_CHECK_BYTES_COUNT);
+
+    // set bytes for bound checking
+    memset((unsigned char*)block + new_size, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
+#endif 
 
     if (!block)
         warn_null_return("realloc()", file_name, src_line, new_size);
 
-    // set bytes for bound checking
-    memset((unsigned char*)block + new_size, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
+    AllocData* alloc_data = allocdata_create(block, new_size, file_name, src_line);
 
-    AllocData* block_data = blockdata_create(block, new_size, file_name, src_line);
-
-   // ptr = NULL, realloc acts as malloc
+   // ptr == NULL, realloc acts as malloc
     if (!ptr)
-        map_allocs_insert(instance_map_allocs(), block_data);
+        map_allocs_insert(instance_map_allocs(), alloc_data);
 
     // realloc expanded existing block
     else if (ptr == block)
-        map_allocs_update(instance_map_allocs(), block_data);
+        map_allocs_update(instance_map_allocs(), alloc_data);
 
     // realloc decided to allocate new block
     else
     {
         map_allocs_remove(instance_map_allocs(), ptr);
-        map_allocs_insert(instance_map_allocs(), block_data);
+        map_allocs_insert(instance_map_allocs(), alloc_data);
     }
 
-    update_alloc_data(block_data);
+    allocdata_update(alloc_data);
 
     return block;
 }
@@ -603,25 +652,33 @@ void debug_free(void* ptr, const char* file_name, int src_line)
     // nullptrs do nothing
     if (ptr == NULL) return;
 
+#ifndef MEM_DEBUGGER_NO_WRONG_PTR_WARN
     // this ptr should be in active allocs map
     AllocData* found_block = map_allocs_get(instance_map_allocs(), ptr);
 
-    // if it's not correct pointer to heap memory, crash
+    // if it's not correct pointer to heap memory, warn
     if (!found_block)
         warn_wrong_ptr("free()", file_name, src_line);
+#endif
 
+#ifndef MEM_DEBUGGER_NO_BOUND_CHECK
     // check bytes after block, they shouldn't be changed
     unsigned char required_bytes[BOUND_CHECK_BYTES_COUNT];
     memset(required_bytes, BOUND_CHECK_BYTE_VALUE, BOUND_CHECK_BYTES_COUNT);
 
-    if (memcmp((unsigned char*)ptr + found_block->size,
-               required_bytes, BOUND_CHECK_BYTES_COUNT))
+    if (memcmp(
+        (unsigned char*)ptr + found_block->size,
+        required_bytes, BOUND_CHECK_BYTES_COUNT
+    ))
     {
-        warn_bound_violation(found_block->file_name,
-                             found_block->src_line, found_block->size);
+        warn_bound_violation(
+            found_block->file_name,
+            found_block->src_line, found_block->size
+        );
     }
+#endif
 
-    // if all good, remove ptr form map of active allocs
+    // if everything seems good, remove ptr form map of active allocs
     map_allocs_remove(instance_map_allocs(), ptr);
 
     free(ptr);
@@ -644,9 +701,7 @@ static void print_str_with_width(FILE* stream, const char* str, int n)
 
     else
     {
-        for (int i = 0; i < 3; i++)
-            putc('.', stream);
-        
+        fprintf(stream, "...");
         if (n > 3)
             fprintf(stream, "%s", str + str_len - n + 3);
     }
@@ -657,8 +712,10 @@ static void print_info(FILE* stream)
     // print info about memory leaks
     fprintf(stream, "%s", "Current unfreed allocations:\n");
 
-    fprintf(stream, "%-42.42s %-5.5s %-16.16s\n",
-            "Source file", "Line", "Bytes");
+    fprintf(
+        stream, "%-42.42s %-5.5s %-16.16s\n",
+        "Source file", "Line", "Bytes"
+    );
 
     size_t total_size = 0;
     size_t blocks_count = 0;
@@ -672,9 +729,11 @@ static void print_info(FILE* stream)
         while (curr_node)
         {
             print_str_with_width(stream, curr_node->data->file_name, 41);
-            fprintf(stream, "  %-5d %-16llu\n",
-                    curr_node->data->src_line,
-                    (ull)curr_node->data->size);
+            fprintf(
+                stream, "  %-5d %-16llu\n",
+                curr_node->data->src_line,
+                (ull)curr_node->data->size
+            );
 
             total_size += curr_node->data->size;
             blocks_count++;
@@ -683,14 +742,18 @@ static void print_info(FILE* stream)
         }
     }
 
-    fprintf(stream, "\nUnfreed total: %llu bytes from %llu allocation(s)\n\n",
-            (ull)total_size, (ull)blocks_count);
+    fprintf(
+        stream, "\nUnfreed total: %llu bytes from %llu allocation(s)\n\n",
+        (ull)total_size, (ull)blocks_count
+    );
 
     // print info about heavy-hitter allocations
     fprintf(stream, "Top-5 heaviest allocations so far:\n");
 
-    fprintf(stream, "%-42.42s %-5.5s %-10.10s %-10.10s\n",
-            "Source file", "Line", "Bytes", "Percentage");
+    fprintf(
+        stream, "%-42.42s %-5.5s %-10.10s %-10.10s\n",
+        "Source file", "Line", "Bytes", "Percentage"
+    );
 
     AllocSiteData** arr = map_allocsites_get_sorted_array(instance_map_allocsites());
     size_t arr_size = instance_map_allocsites()->size;
@@ -699,10 +762,12 @@ static void print_info(FILE* stream)
     for (int i = 0; i < 5 && i < arr_size; i++)
     {
         print_str_with_width(stream, arr[i]->file_name, 41);
-        fprintf(stream, "  %-5d %-10llu %.2lf%%\n",
-                arr[i]->src_line,
-                (ull)arr[i]->bytes,
-                100.0 * (double)arr[i]->bytes / total_bytes);
+        fprintf(
+            stream, "  %-5d %-10llu %.2lf%%\n",
+            arr[i]->src_line,
+            (ull)arr[i]->bytes,
+            100.0 * (double)arr[i]->bytes / total_bytes
+        );
     }
 
     free(arr);

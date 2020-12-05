@@ -80,6 +80,8 @@ To print to file, pass `(1, "file_name.txt)"`;
 
 See *usage_example.c* for possible usage.
 
+Also, some settings are available, see comment at the top of `mem_debugger.h`
+
 ## Example output
 
 ```
